@@ -1,0 +1,36 @@
+name: Daily Equity Screener Auto-Update
+
+on:
+  schedule:
+    # Runs every day at 9:30 AM IST (4:00 AM UTC) and 4:00 PM IST (10:30 AM UTC)
+    - cron: '0 4,10 * * *'
+  workflow_dispatch: # Allows you to click "Run" manually anytime!
+
+jobs:
+  update-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install libraries
+        run: pip install yfinance nltk huggingface_hub
+      - name: Run Screener & Generate Fresh HTML
+        run: python update_screener.py
+      - name: Push Fresh Dashboard to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "
+          from huggingface_hub import HfApi
+          api = HfApi()
+          api.upload_file(
+              path_or_fileobj='index.html',
+              path_in_repo='index.html',
+              repo_id='Anujk04/indian-stock-screener',
+              repo_type='space',
+              token='$HF_TOKEN'
+          )
+          "
