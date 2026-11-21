@@ -132,27 +132,21 @@ SPAM_DOMAINS = {
 
 
 def fetch_clean_headlines(company_name, symbol):
-  """Fetches Google News RSS headlines from the last 7 days, strips spam & duplicates."""
   query = urllib.parse.quote(f'"{company_name}" OR "{symbol}" stock India')
   url = (
       f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
   )
   feed = feedparser.parse(url)
-
   cutoff = datetime.now(timezone.utc) - timedelta(days=7)
   clean_titles = []
 
   for entry in feed.entries[:25]:
-    # 1. Freshness check (last 7 days)
     if hasattr(entry, "published"):
       try:
-        pub_dt = parsedate_to_datetime(entry.published)
-        if pub_dt < cutoff:
+        if parsedate_to_datetime(entry.published) < cutoff:
           continue
       except Exception:
         pass
-
-    # 2. Spam aggregator filter
     source_href = (
         entry.get("source", {}).get("href", "").lower()
         if isinstance(entry.get("source"), dict)
@@ -160,37 +154,29 @@ def fetch_clean_headlines(company_name, symbol):
     )
     if any(spam in source_href for spam in SPAM_DOMAINS):
       continue
-
-    # Strip trailing publisher name (" - Economic Times")
     title = entry.title.rsplit(" - ", 1)[0].strip()
     if len(title) < 15:
       continue
-
-    # 3. Fuzzy deduplication (ratio > 0.75)
-    is_dup = any(
+    if not any(
         SequenceMatcher(None, title.lower(), existing.lower()).ratio() > 0.75
         for existing in clean_titles
-    )
-    if not is_dup:
+    ):
       clean_titles.append(title)
-
   return clean_titles[:10]
 
 
 def score_headlines_finbert(ticker_headlines_map):
-  """Runs batched ProsusAI/finbert inference across all valid headlines."""
   print("Loading ProsusAI/finbert model...")
   model_name = "ProsusAI/finbert"
   tokenizer = AutoTokenizer.from_pretrained(model_name)
   model = AutoModelForSequenceClassification.from_pretrained(model_name)
   model.eval()
 
-  # Flatten all headlines for fast batched inference
   flat_texts = []
   ticker_slices = {}
   idx = 0
   for ticker, titles in ticker_headlines_map.items():
-    if len(titles) >= 3:  # Minimum 3 unique headlines required
+    if len(titles) >= 3:
       ticker_slices[ticker] = (idx, idx + len(titles))
       flat_texts.extend(titles)
       idx += len(titles)
@@ -199,34 +185,28 @@ def score_headlines_finbert(ticker_headlines_map):
   if not flat_texts:
     return scores
 
-  batch_size = 32
   net_polarities = []
   with torch.no_grad():
-    for i in range(0, len(flat_texts), batch_size):
-      batch = flat_texts[i : i + batch_size]
+    for i in range(0, len(flat_texts), 32):
+      batch = flat_texts[i : i + 32]
       inputs = tokenizer(
           batch, padding=True, truncation=True, max_length=128, return_tensors="pt"
       )
       outputs = model(**inputs)
       probs = torch.nn.functional.softmax(outputs.logits, dim=-1).numpy()
-      # ProsusAI/finbert label order: 0 = positive, 1 = negative, 2 = neutral
       for p in probs:
         net_polarities.append(float(p[0] - p[1]))
 
   for ticker, (start, end) in ticker_slices.items():
     scores[ticker] = round(float(np.mean(net_polarities[start:end])), 3)
-
   return scores
 
 
 def fetch_universe_data():
   print("Downloading bulk price & volume history...")
+  all_tickers = UNIVERSE_TICKERS + ["^NSEI"]
   hist_data = yf.download(
-      UNIVERSE_TICKERS,
-      period="8mo",
-      group_by="ticker",
-      progress=False,
-      threads=True,
+      all_tickers, period="8mo", group_by="ticker", progress=False, threads=True
   )
 
   records = []
@@ -314,17 +294,14 @@ def fetch_universe_data():
 
   df = pd.DataFrame(records)
   if df.empty:
-    return df
+    return df, hist_data
 
-  # Run FinBERT on all cleaned headlines
   finbert_scores = score_headlines_finbert(headlines_map)
-  df["FinBERT_Score"] = df["Ticker"].map(finbert_scores)  # NaN if < 3 headlines
+  df["FinBERT_Score"] = df["Ticker"].map(finbert_scores)
 
-  # --- CROSS-SECTIONAL MULTI-FACTOR PERCENTILE RANKING (0 to 100) ---
   df["Val_Rank"] = (
       df.groupby("Sector")["Val_Metric"].rank(pct=True, ascending=False) * 100
   )
-
   roe_rank = df["ROE_%"].rank(pct=True, ascending=True) * 100
   de_rank = df["DE"].rank(pct=True, ascending=False) * 100
   df["Qual_Rank"] = np.where(
@@ -332,12 +309,10 @@ def fetch_universe_data():
       roe_rank,
       (roe_rank.fillna(50) * 0.6 + de_rank.fillna(50) * 0.4),
   )
-
   rev_rank = df["Rev_Growth_%"].rank(pct=True, ascending=True) * 100
   eps_rank = df["EPS_Growth_%"].rank(pct=True, ascending=True) * 100
   df["Growth_Rank"] = rev_rank.fillna(50) * 0.5 + eps_rank.fillna(50) * 0.5
 
-  # Momentum + FinBERT Sentiment (25% total: 15% Price Momentum + 10% FinBERT NLP)
   mom_rank = df["Mom_6m_1m_%"].rank(pct=True, ascending=True).fillna(0.5) * 100
   sent_rank = df["FinBERT_Score"].rank(pct=True, ascending=True).fillna(0.5) * 100
   df["Mom_Sent_Rank"] = mom_rank * 0.6 + sent_rank * 0.4
@@ -369,10 +344,106 @@ def fetch_universe_data():
   df = df.sort_values(by="Composite_Score", ascending=False).reset_index(
       drop=True
   )
-  return df
+  return df, hist_data
 
 
-def generate_html(df):
+def run_forward_backtest(history_df, hist_data):
+  """Evaluates historical snapshots against Nifty 50 (^NSEI) net of 0.25% NSE delivery costs."""
+  summary = {
+      "status": "accumulating",
+      "first_date": "N/A",
+      "unique_days": 0,
+      "horizon_days": 0,
+      "top_net_ret": 0.0,
+      "nifty_ret": 0.0,
+      "net_alpha": 0.0,
+      "hit_rate": 0.0,
+      "spearman_ic": 0.0,
+      "spread": 0.0,
+  }
+  if history_df.empty or "Composite_Score" not in history_df.columns:
+    return summary
+
+  valid_hist = history_df.dropna(subset=["Composite_Score", "Price"]).copy()
+  unique_dates = sorted(valid_hist["Run_Date"].unique())
+  if not unique_dates:
+    return summary
+
+  summary["first_date"] = unique_dates[0]
+  summary["unique_days"] = len(unique_dates)
+
+  # Pick the earliest available snapshot date that is at least 5 calendar days old
+  latest_date = pd.to_datetime(unique_dates[-1])
+  eligible_dates = [
+      d for d in unique_dates if (latest_date - pd.to_datetime(d)).days >= 5
+  ]
+  if not eligible_dates:
+    return summary
+
+  eval_date = eligible_dates[0]
+  summary["horizon_days"] = (latest_date - pd.to_datetime(eval_date)).days
+  cohort = valid_hist[valid_hist["Run_Date"] == eval_date].copy()
+
+  # Map current prices from hist_data
+  curr_prices = {}
+  for t in cohort["Ticker"].unique():
+    ns_t = f"{t}.NS"
+    if ns_t in hist_data.columns.get_level_values(0):
+      s = hist_data[ns_t]["Close"].dropna()
+      if not s.empty:
+        curr_prices[t] = float(s.iloc[-1])
+
+  cohort["Curr_Price"] = cohort["Ticker"].map(curr_prices)
+  cohort = cohort.dropna(subset=["Curr_Price"])
+  if len(cohort) < 10:
+    return summary
+
+  # Gross forward return (%)
+  cohort["Fwd_Ret_%"] = (
+      (cohort["Curr_Price"] - cohort["Price"]) / cohort["Price"]
+  ) * 100
+
+  # Nifty 50 (^NSEI) benchmark return over the exact same window
+  nifty_series = hist_data["^NSEI"]["Close"].dropna()
+  nifty_series.index = nifty_series.index.tz_localize(None)
+  start_dt = pd.to_datetime(eval_date)
+  nifty_sub = nifty_series[nifty_series.index >= start_dt]
+  if len(nifty_sub) < 2:
+    return summary
+  nifty_ret = (
+      (float(nifty_sub.iloc[-1]) - float(nifty_sub.iloc[0]))
+      / float(nifty_sub.iloc[0])
+  ) * 100
+
+  # Deduct 0.25% round-trip NSE delivery transaction cost (STT, stamp duty, brokerage, slippage)
+  tx_cost = 0.25
+  top_q = cohort[cohort["Screen_Flag"] == "Passes Multi-Factor Screen"]
+  bot_q = cohort[cohort["Screen_Flag"] == "Fails Screen / Lagging"]
+
+  if top_q.empty:
+    return summary
+
+  top_net_ret = float(top_q["Fwd_Ret_%"].mean()) - tx_cost
+  bot_net_ret = float(bot_q["Fwd_Ret_%"].mean()) - tx_cost if not bot_q.empty else 0.0
+  hit_rate = float((top_q["Fwd_Ret_%"] - tx_cost > nifty_ret).mean()) * 100
+  ic = float(
+      cohort["Composite_Score"].corr(cohort["Fwd_Ret_%"], method="spearman")
+  )
+
+  summary.update({
+      "status": "active",
+      "eval_date": eval_date,
+      "top_net_ret": round(top_net_ret, 2),
+      "nifty_ret": round(nifty_ret, 2),
+      "net_alpha": round(top_net_ret - nifty_ret, 2),
+      "hit_rate": round(hit_rate, 1),
+      "spearman_ic": round(ic, 3) if not np.isnan(ic) else 0.0,
+      "spread": round(top_net_ret - bot_net_ret, 2),
+  })
+  return summary
+
+
+def generate_html(df, bt):
   ist = timezone(timedelta(hours=5, minutes=30))
   timestamp = datetime.now(ist).strftime("%d %b %Y, %I:%M %p IST")
 
@@ -380,6 +451,57 @@ def generate_html(df):
   top_quintile_count = len(df[df["Screen_Flag"] == "Passes Multi-Factor Screen"])
   nm_count = len(df[df["Val_Tag"] != "Valid"])
   finbert_covered = int(df["FinBERT_Score"].notna().sum())
+
+  if bt["status"] == "active":
+    alpha_color = "text-emerald-400" if bt["net_alpha"] >= 0 else "text-rose-400"
+    verdict = (
+        "OUTPERFORMING NIFTY 50"
+        if bt["net_alpha"] >= 0
+        else "TRAILING NIFTY 50"
+    )
+    bt_banner = f"""
+        <div class="bg-slate-900 border border-emerald-500/30 rounded-xl p-5 mb-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 mb-4">
+                <div>
+                    <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Live Point-in-Time Backtest vs. Nifty 50 (^NSEI)</span>
+                    <h2 class="text-lg font-bold text-white">Cohort Recorded: {bt['eval_date']} ({bt['horizon_days']}-Day Forward Window • Net of 0.25% NSE Tx Costs)</h2>
+                </div>
+                <span class="px-3 py-1 rounded-full text-xs font-bold bg-slate-800 {alpha_color} border border-slate-700">{verdict}</span>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+                <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                    <div class="text-xs text-slate-400">Top Quintile (Net)</div>
+                    <div class="text-lg font-bold text-white">{bt['top_net_ret']:+.2f}%</div>
+                </div>
+                <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                    <div class="text-xs text-slate-400">Nifty 50 Benchmark</div>
+                    <div class="text-lg font-bold text-slate-300">{bt['nifty_ret']:+.2f}%</div>
+                </div>
+                <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                    <div class="text-xs text-slate-400">Net Alpha vs. Nifty</div>
+                    <div class="text-lg font-bold {alpha_color}">{bt['net_alpha']:+.2f}%</div>
+                </div>
+                <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                    <div class="text-xs text-slate-400">Hit Rate / Spearman IC</div>
+                    <div class="text-lg font-bold text-sky-400">{bt['hit_rate']}% <span class="text-xs text-slate-400">/ IC {bt['spearman_ic']}</span></div>
+                </div>
+                <div class="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                    <div class="text-xs text-slate-400">Top vs. Bottom Spread</div>
+                    <div class="text-lg font-bold text-emerald-300">{bt['spread']:+.2f}%</div>
+                </div>
+            </div>
+        </div>
+        """
+  else:
+    bt_banner = f"""
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+            <div>
+                <span class="text-xs font-semibold uppercase tracking-wider text-sky-400">Point-in-Time Forward Backtest Engine Active</span>
+                <p class="text-sm text-slate-300 mt-0.5">Recording daily snapshots since <strong>{bt['first_date']}</strong> ({bt['unique_days']} trading day logged). Nifty 50 (^NSEI) net alpha, hit rate, and Spearman IC automatically unlock once the first cohort reaches <strong>5+ days</strong>.</p>
+            </div>
+            <span class="text-xs font-mono bg-slate-800 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700">Zero Look-Ahead Bias</span>
+        </div>
+        """
 
   records_json = df.fillna("N/A").to_json(orient="records")
 
@@ -393,7 +515,7 @@ def generate_html(df):
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8 font-sans antialiased">
     <div class="max-w-7xl mx-auto">
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 border-b border-slate-800 pb-5 gap-4">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b border-slate-800 pb-5 gap-4">
             <div>
                 <span class="text-xs font-semibold uppercase tracking-wider text-emerald-400">Institutional Quantitative & NLP Research Pipeline</span>
                 <h1 class="text-2xl md:text-3xl font-bold tracking-tight text-white mt-1">NSE Multi-Factor &amp; FinBERT Screener</h1>
@@ -403,6 +525,8 @@ def generate_html(df):
                 <span class="inline-block bg-slate-900 text-emerald-400 text-xs px-3 py-1.5 rounded-full border border-slate-700 font-mono">Auto-Updated: {timestamp}</span>
             </div>
         </header>
+
+        {bt_banner}
 
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -458,7 +582,7 @@ def generate_html(df):
         </div>
 
         <footer class="mt-8 text-xs text-slate-500 border-t border-slate-800 pt-4 space-y-1">
-            <p><strong>Methodology:</strong> Cross-sectional percentile ranks computed daily across liquid NSE large/mid-cap equities (20D turnover ≥ ₹25 Cr). Financial Services evaluated on P/B &amp; ROE; non-financials on sector-relative P/E, ROE, Debt/Equity, Revenue/EPS growth, 6M-1M momentum, and ProsusAI/FinBERT net sentiment across deduplicated 7-day headlines (minimum 3 headlines required).</p>
+            <p><strong>Methodology:</strong> Cross-sectional percentile ranks computed daily across liquid NSE large/mid-cap equities (20D turnover ≥ ₹25 Cr). Benchmark evaluated against Nifty 50 (^NSEI) net of 0.25% NSE delivery transaction costs using point-in-time logged cohorts.</p>
             <p><strong>Disclaimer:</strong> Educational and quantitative engineering demonstration only. Outputs reflect algorithmic factor filtering, not SEBI-registered investment advice.</p>
         </footer>
     </div>
@@ -521,15 +645,12 @@ def generate_html(df):
 
 
 if __name__ == "__main__":
-  df = fetch_universe_data()
-  html = generate_html(df)
-
-  with open("index.html", "w", encoding="utf-8") as f:
-    f.write(html)
+  df, hist_data = fetch_universe_data()
 
   hf_token = os.environ.get("HF_TOKEN")
   repo_id = "Anujk04/indian-stock-screener"
   history_file = "screener_history.csv"
+  existing_df = pd.DataFrame()
 
   if hf_token:
     api = HfApi()
@@ -553,7 +674,16 @@ if __name__ == "__main__":
         subset=["Run_Date", "Ticker"], keep="last"
     )
     combined_df.to_csv(history_file, index=False)
+  else:
+    combined_df = df
 
+  bt_summary = run_forward_backtest(combined_df, hist_data)
+  html = generate_html(df, bt_summary)
+
+  with open("index.html", "w", encoding="utf-8") as f:
+    f.write(html)
+
+  if hf_token:
     api.upload_file(
         path_or_fileobj="index.html",
         path_in_repo="index.html",
@@ -568,4 +698,4 @@ if __name__ == "__main__":
         repo_type="space",
         token=hf_token,
     )
-    print(f"Successfully updated FinBERT dashboard with {len(df)} stocks!")
+    print("Successfully updated FinBERT dashboard & live Nifty 50 backtester!")
