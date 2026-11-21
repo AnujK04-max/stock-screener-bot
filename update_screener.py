@@ -557,7 +557,8 @@ def generate_html(df, bt):
                 <div class="text-xs text-slate-400 mt-1">Tagged NM (Loss / P/E &gt; 100)</div>
             </div>
         </div>
-<div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
             <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 mb-4">
                 <div>
                     <span class="text-xs font-semibold uppercase tracking-wider text-sky-400">What-If Sensitivity Tool (Client-Side Only)</span>
@@ -714,3 +715,115 @@ def generate_html(df, bt):
             document.getElementById('tableBody').innerHTML = filtered.map((s, idx) => {{
                 let badgeClass = 'bg-slate-800 text-slate-300';
                 if (s.Screen_Flag === 'Passes Multi-Factor Screen') badgeClass = 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30';
+                else if (s.Screen_Flag.startsWith('NM')) badgeClass = 'bg-amber-500/15 text-amber-400 border border-amber-500/30';
+                else if (s.Screen_Flag === 'Fails Screen / Lagging') badgeClass = 'bg-rose-500/10 text-rose-400';
+
+                const chgColor = s['Change_%'] >= 0 ? 'text-emerald-400' : 'text-rose-400';
+                const deltaColor = s.Sim_Delta > 0 ? 'text-emerald-400' : (s.Sim_Delta < 0 ? 'text-rose-400' : 'text-slate-400');
+                const simBadge = s.In_Sim_Top20
+                    ? '<span class="ml-1.5 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">Sim Top 20%</span>'
+                    : '';
+
+                let sentHtml = '<span class="text-slate-500 text-xs">Insufficient (&lt;3)</span>';
+                if (s.FinBERT_Score !== 'N/A') {{
+                    const sc = Number(s.FinBERT_Score);
+                    const sColor = sc > 0.1 ? 'text-emerald-400' : (sc < -0.1 ? 'text-rose-400' : 'text-slate-300');
+                    sentHtml = `<span class="font-mono font-semibold ${{sColor}}">${{sc >= 0 ? '+' : ''}}${{sc.toFixed(2)}}</span> <span class="text-xs text-slate-500">(${{s.Headline_Count}} news)</span>`;
+                }}
+
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="py-3 px-4">
+                            <div class="font-bold text-white"><span class="text-slate-500 font-mono mr-1.5">#${{idx + 1}}</span>${{s.Ticker}}${{simBadge}}</div>
+                            <div class="text-xs text-slate-400">${{s.Sector}}</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div class="font-semibold text-white">₹${{Number(s.Price).toLocaleString('en-IN')}}</div>
+                            <div class="text-xs ${{chgColor}}">${{s['Change_%'] >= 0 ? '+' : ''}}${{s['Change_%']}}%</div>
+                        </td>
+                        <td class="py-3 px-4 font-mono">
+                            <div class="font-bold text-emerald-300">${{s.Composite_Score}} <span class="text-xs text-slate-500 font-normal">/100</span></div>
+                            <div class="text-xs text-sky-300">Sim: ${{s.Sim_Score}} <span class="${{deltaColor}}">(${{s.Sim_Delta >= 0 ? '+' : ''}}${{s.Sim_Delta}})</span></div>
+                        </td>
+                        <td class="py-3 px-4 text-slate-300 text-xs font-mono">PE: ${{s.PE}}<br>PB: ${{s.PB}}</td>
+                        <td class="py-3 px-4 text-slate-300">${{s['ROE_%'] !== 'N/A' ? s['ROE_%'] + '%' : 'N/A'}}</td>
+                        <td class="py-3 px-4">${{sentHtml}}</td>
+                        <td class="py-3 px-4"><span class="px-2.5 py-1 rounded-full text-xs font-medium ${{badgeClass}}">${{s.Screen_Flag}}</span></td>
+                    </tr>
+                `;
+            }}).join('');
+        }}
+
+        renderTable();
+        sliderIds.forEach(id => document.getElementById(id).addEventListener('input', renderTable));
+        document.getElementById('resetWeightsBtn').addEventListener('click', () => {{
+            document.getElementById('sliderVal').value = 25;
+            document.getElementById('sliderQual').value = 30;
+            document.getElementById('sliderGrowth').value = 20;
+            document.getElementById('sliderMom').value = 25;
+            renderTable();
+        }});
+        document.getElementById('searchInput').addEventListener('input', renderTable);
+        document.getElementById('flagFilter').addEventListener('change', renderTable);
+    </script>
+</body>
+</html>
+"""
+  return html_content
+
+
+if __name__ == "__main__":
+  df, hist_data = fetch_universe_data()
+
+  hf_token = os.environ.get("HF_TOKEN")
+  repo_id = "Anujk04/indian-stock-screener"
+  history_file = "screener_history.csv"
+  existing_df = pd.DataFrame()
+
+  if hf_token:
+    api = HfApi()
+    try:
+      downloaded_path = hf_hub_download(
+          repo_id=repo_id,
+          filename=history_file,
+          repo_type="space",
+          token=hf_token,
+      )
+      existing_df = pd.read_csv(downloaded_path)
+    except Exception:
+      existing_df = pd.DataFrame()
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    df["Run_Date"] = datetime.now(ist).strftime("%Y-%m-%d")
+    df["Timestamp"] = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+
+    combined_df = pd.concat([existing_df, df], ignore_index=True)
+    combined_df = combined_df.drop_duplicates(
+        subset=["Run_Date", "Ticker"], keep="last"
+    )
+    combined_df.to_csv(history_file, index=False)
+  else:
+    combined_df = df
+
+  bt_summary = run_forward_backtest(combined_df, hist_data)
+  html = generate_html(df, bt_summary)
+
+  with open("index.html", "w", encoding="utf-8") as f:
+    f.write(html)
+
+  if hf_token:
+    api.upload_file(
+        path_or_fileobj="index.html",
+        path_in_repo="index.html",
+        repo_id=repo_id,
+        repo_type="space",
+        token=hf_token,
+    )
+    api.upload_file(
+        path_or_fileobj=history_file,
+        path_in_repo=history_file,
+        repo_id=repo_id,
+        repo_type="space",
+        token=hf_token,
+    )
+    print("Successfully updated FinBERT dashboard & live Nifty 50 backtester!")
