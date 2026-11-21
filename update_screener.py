@@ -299,9 +299,10 @@ def fetch_universe_data():
   finbert_scores = score_headlines_finbert(headlines_map)
   df["FinBERT_Score"] = df["Ticker"].map(finbert_scores)
 
-  df["Val_Rank"] = (
+ df["Val_Rank"] = (
       df.groupby("Sector")["Val_Metric"].rank(pct=True, ascending=False) * 100
-  )
+  ).fillna(0)
+
   roe_rank = df["ROE_%"].rank(pct=True, ascending=True) * 100
   de_rank = df["DE"].rank(pct=True, ascending=False) * 100
   df["Qual_Rank"] = np.where(
@@ -309,6 +310,7 @@ def fetch_universe_data():
       roe_rank,
       (roe_rank.fillna(50) * 0.6 + de_rank.fillna(50) * 0.4),
   )
+
   rev_rank = df["Rev_Growth_%"].rank(pct=True, ascending=True) * 100
   eps_rank = df["EPS_Growth_%"].rank(pct=True, ascending=True) * 100
   df["Growth_Rank"] = rev_rank.fillna(50) * 0.5 + eps_rank.fillna(50) * 0.5
@@ -318,7 +320,7 @@ def fetch_universe_data():
   df["Mom_Sent_Rank"] = mom_rank * 0.6 + sent_rank * 0.4
 
   df["Composite_Score"] = (
-      df["Val_Rank"].fillna(0) * 0.25
+      df["Val_Rank"] * 0.25
       + df["Qual_Rank"].fillna(50) * 0.30
       + df["Growth_Rank"].fillna(50) * 0.20
       + df["Mom_Sent_Rank"] * 0.25
@@ -327,6 +329,9 @@ def fetch_universe_data():
   df.loc[df["Val_Tag"] != "Valid", "Composite_Score"] = (
       df["Composite_Score"] * 0.5
   ).round(1)
+
+  for col in ["Val_Rank", "Qual_Rank", "Growth_Rank", "Mom_Sent_Rank"]:
+    df[col] = df[col].fillna(50).round(1)
 
   quintile_cutoff = df["Composite_Score"].quantile(0.80)
 
@@ -550,7 +555,57 @@ def generate_html(df, bt):
                 <div class="text-xs text-slate-400 mt-1">Tagged NM (Loss / P/E &gt; 100)</div>
             </div>
         </div>
+<div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 mb-4">
+                <div>
+                    <span class="text-xs font-semibold uppercase tracking-wider text-sky-400">What-If Sensitivity Tool (Client-Side Only)</span>
+                    <h2 class="text-lg font-bold text-white">Interactive Factor Weight Simulator</h2>
+                    <p class="text-xs text-slate-400 mt-0.5">Weights auto-normalize to 100%. Does <strong>not</strong> change Nifty 50 (^NSEI) benchmark returns or overwrite your locked-in point-in-time backtest.</p>
+                </div>
+                <button id="resetWeightsBtn" type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+                    Reset to Default (25 / 30 / 20 / 25)
+                </button>
+            </div>
 
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-slate-300 font-medium">Value (P/E &amp; P/B)</span>
+                        <span id="wValNorm" class="font-mono text-emerald-400">25.0%</span>
+                    </div>
+                    <input id="sliderVal" type="range" min="0" max="60" step="5" value="25" class="w-full accent-emerald-400">
+                    <div class="text-[11px] text-slate-500 mt-1">Raw slider: <span id="wValRaw">25</span></div>
+                </div>
+
+                <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-slate-300 font-medium">Quality (ROE &amp; D/E)</span>
+                        <span id="wQualNorm" class="font-mono text-emerald-400">30.0%</span>
+                    </div>
+                    <input id="sliderQual" type="range" min="0" max="60" step="5" value="30" class="w-full accent-emerald-400">
+                    <div class="text-[11px] text-slate-500 mt-1">Raw slider: <span id="wQualRaw">30</span></div>
+                </div>
+
+                <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-slate-300 font-medium">Growth (Rev &amp; EPS)</span>
+                        <span id="wGrowthNorm" class="font-mono text-emerald-400">20.0%</span>
+                    </div>
+                    <input id="sliderGrowth" type="range" min="0" max="60" step="5" value="20" class="w-full accent-emerald-400">
+                    <div class="text-[11px] text-slate-500 mt-1">Raw slider: <span id="wGrowthRaw">20</span></div>
+                </div>
+
+                <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-slate-300 font-medium">Mom + FinBERT (7D)</span>
+                        <span id="wMomNorm" class="font-mono text-emerald-400">25.0%</span>
+                    </div>
+                    <input id="sliderMom" type="range" min="0" max="60" step="5" value="25" class="w-full accent-emerald-400">
+                    <div class="text-[11px] text-slate-500 mt-1">Raw slider: <span id="wMomRaw">25</span></div>
+                </div>
+            </div>
+        </div>
+    
         <div class="flex flex-wrap gap-3 mb-5">
             <input type="text" id="searchInput" placeholder="Search ticker or sector..." class="bg-slate-900 border border-slate-700 text-sm rounded-lg px-4 py-2 text-white focus:outline-none focus:border-emerald-500 w-full md:w-64">
             <select id="flagFilter" class="bg-slate-900 border border-slate-700 text-sm rounded-lg px-4 py-2 text-white focus:outline-none focus:border-emerald-500">
@@ -587,14 +642,68 @@ def generate_html(df, bt):
         </footer>
     </div>
 
-    <script>
+   <script>
         const stocks = {records_json};
+        const sliderIds = ['sliderVal', 'sliderQual', 'sliderGrowth', 'sliderMom'];
+
+        function getNormalizedWeights() {{
+            const raw = {{
+                v: Number(document.getElementById('sliderVal').value),
+                q: Number(document.getElementById('sliderQual').value),
+                g: Number(document.getElementById('sliderGrowth').value),
+                m: Number(document.getElementById('sliderMom').value)
+            }};
+            const total = raw.v + raw.q + raw.g + raw.m;
+            const norm = total > 0
+                ? {{ v: raw.v / total, q: raw.q / total, g: raw.g / total, m: raw.m / total }}
+                : {{ v: 0.25, q: 0.30, g: 0.20, m: 0.25 }};
+
+            document.getElementById('wValRaw').textContent = raw.v;
+            document.getElementById('wQualRaw').textContent = raw.q;
+            document.getElementById('wGrowthRaw').textContent = raw.g;
+            document.getElementById('wMomRaw').textContent = raw.m;
+
+            document.getElementById('wValNorm').textContent = (norm.v * 100).toFixed(1) + '%';
+            document.getElementById('wQualNorm').textContent = (norm.q * 100).toFixed(1) + '%';
+            document.getElementById('wGrowthNorm').textContent = (norm.g * 100).toFixed(1) + '%';
+            document.getElementById('wMomNorm').textContent = (norm.m * 100).toFixed(1) + '%';
+
+            return norm;
+        }}
+
+        function simulateScores(norm) {{
+            const scored = stocks.map(s => {{
+                const vRank = s.Val_Rank === 'N/A' ? 0 : Number(s.Val_Rank);
+                const qRank = s.Qual_Rank === 'N/A' ? 50 : Number(s.Qual_Rank);
+                const gRank = s.Growth_Rank === 'N/A' ? 50 : Number(s.Growth_Rank);
+                const mRank = s.Mom_Sent_Rank === 'N/A' ? 50 : Number(s.Mom_Sent_Rank);
+
+                let sim = (norm.v * vRank) + (norm.q * qRank) + (norm.g * gRank) + (norm.m * mRank);
+                if (s.Val_Tag !== 'Valid') sim *= 0.5;
+                sim = Number(sim.toFixed(1));
+
+                const base = Number(s.Composite_Score);
+                const delta = Number((sim - base).toFixed(1));
+                return {{ ...s, Sim_Score: sim, Sim_Delta: delta }};
+            }});
+
+            const sortedSim = [...scored].map(x => x.Sim_Score).sort((a, b) => a - b);
+            const cutoffIdx = Math.floor(sortedSim.length * 0.80);
+            const simCutoff = sortedSim[cutoffIdx] ?? 70;
+
+            return scored.map(x => ({{
+                ...x,
+                In_Sim_Top20: x.Val_Tag === 'Valid' && x.Sim_Score >= simCutoff
+            }}));
+        }}
 
         function renderTable() {{
             const query = document.getElementById('searchInput').value.toLowerCase();
             const flagFilter = document.getElementById('flagFilter').value;
+            const normWeights = getNormalizedWeights();
+            const simStocks = simulateScores(normWeights);
 
-            const filtered = stocks.filter(s => {{
+            const filtered = simStocks.filter(s => {{
                 const matchText = s.Ticker.toLowerCase().includes(query) || s.Sector.toLowerCase().includes(query);
                 const matchFlag = flagFilter === 'ALL' || (flagFilter === 'NM' ? s.Screen_Flag.startsWith('NM') : s.Screen_Flag === flagFilter);
                 return matchText && matchFlag;
@@ -607,6 +716,11 @@ def generate_html(df, bt):
                 else if (s.Screen_Flag === 'Fails Screen / Lagging') badgeClass = 'bg-rose-500/10 text-rose-400';
 
                 const chgColor = s['Change_%'] >= 0 ? 'text-emerald-400' : 'text-rose-400';
+                const deltaColor = s.Sim_Delta > 0 ? 'text-emerald-400' : (s.Sim_Delta < 0 ? 'text-rose-400' : 'text-slate-400');
+                const simBadge = s.In_Sim_Top20
+                    ? '<span class="ml-1.5 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">Sim Top 20%</span>'
+                    : '';
+
                 let sentHtml = '<span class="text-slate-500 text-xs">Insufficient (&lt;3)</span>';
                 if (s.FinBERT_Score !== 'N/A') {{
                     const sc = Number(s.FinBERT_Score);
@@ -617,14 +731,17 @@ def generate_html(df, bt):
                 return `
                     <tr class="hover:bg-slate-800/40 transition">
                         <td class="py-3 px-4">
-                            <div class="font-bold text-white"><span class="text-slate-500 font-mono mr-1.5">#${{idx + 1}}</span>${{s.Ticker}}</div>
+                            <div class="font-bold text-white"><span class="text-slate-500 font-mono mr-1.5">#${{idx + 1}}</span>${{s.Ticker}}${{simBadge}}</div>
                             <div class="text-xs text-slate-400">${{s.Sector}}</div>
                         </td>
                         <td class="py-3 px-4">
                             <div class="font-semibold text-white">₹${{Number(s.Price).toLocaleString('en-IN')}}</div>
                             <div class="text-xs ${{chgColor}}">${{s['Change_%'] >= 0 ? '+' : ''}}${{s['Change_%']}}%</div>
                         </td>
-                        <td class="py-3 px-4 font-mono font-bold text-emerald-300">${{s.Composite_Score}} <span class="text-xs text-slate-500 font-normal">/100</span></td>
+                        <td class="py-3 px-4 font-mono">
+                            <div class="font-bold text-emerald-300">${{s.Composite_Score}} <span class="text-xs text-slate-500 font-normal">/100</span></div>
+                            <div class="text-xs text-sky-300">Sim: ${{s.Sim_Score}} <span class="${{deltaColor}}">(${{s.Sim_Delta >= 0 ? '+' : ''}}${{s.Sim_Delta}})</span></div>
+                        </td>
                         <td class="py-3 px-4 text-slate-300 text-xs font-mono">PE: ${{s.PE}}<br>PB: ${{s.PB}}</td>
                         <td class="py-3 px-4 text-slate-300">${{s['ROE_%'] !== 'N/A' ? s['ROE_%'] + '%' : 'N/A'}}</td>
                         <td class="py-3 px-4">${{sentHtml}}</td>
@@ -635,9 +752,17 @@ def generate_html(df, bt):
         }}
 
         renderTable();
+        sliderIds.forEach(id => document.getElementById(id).addEventListener('input', renderTable));
+        document.getElementById('resetWeightsBtn').addEventListener('click', () => {{
+            document.getElementById('sliderVal').value = 25;
+            document.getElementById('sliderQual').value = 30;
+            document.getElementById('sliderGrowth').value = 20;
+            document.getElementById('sliderMom').value = 25;
+            renderTable();
+        }});
         document.getElementById('searchInput').addEventListener('input', renderTable);
         document.getElementById('flagFilter').addEventListener('change', renderTable);
-    </script>
+        </script>
 </body>
 </html>
 """
