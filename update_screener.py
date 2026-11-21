@@ -300,57 +300,56 @@ def fetch_universe_data():
   df["FinBERT_Score"] = df["Ticker"].map(finbert_scores)
 
  df["Val_Rank"] = (
-      df.groupby("Sector")["Val_Metric"].rank(pct=True, ascending=False) * 100
-  ).fillna(0)
+          df.groupby("Sector")["Val_Metric"].rank(pct=True, ascending=False) * 100
+      ).fillna(0)
 
-  roe_rank = df["ROE_%"].rank(pct=True, ascending=True) * 100
-  de_rank = df["DE"].rank(pct=True, ascending=False) * 100
-  df["Qual_Rank"] = np.where(
-      df["Sector"] == "Financial Services",
-      roe_rank,
-      (roe_rank.fillna(50) * 0.6 + de_rank.fillna(50) * 0.4),
-  )
+      roe_rank = df["ROE_%"].rank(pct=True, ascending=True) * 100
+      de_rank = df["DE"].rank(pct=True, ascending=False) * 100
+      df["Qual_Rank"] = np.where(
+          df["Sector"] == "Financial Services",
+          roe_rank,
+          (roe_rank.fillna(50) * 0.6 + de_rank.fillna(50) * 0.4),
+      )
 
-  rev_rank = df["Rev_Growth_%"].rank(pct=True, ascending=True) * 100
-  eps_rank = df["EPS_Growth_%"].rank(pct=True, ascending=True) * 100
-  df["Growth_Rank"] = rev_rank.fillna(50) * 0.5 + eps_rank.fillna(50) * 0.5
+      rev_rank = df["Rev_Growth_%"].rank(pct=True, ascending=True) * 100
+      eps_rank = df["EPS_Growth_%"].rank(pct=True, ascending=True) * 100
+      df["Growth_Rank"] = rev_rank.fillna(50) * 0.5 + eps_rank.fillna(50) * 0.5
 
-  mom_rank = df["Mom_6m_1m_%"].rank(pct=True, ascending=True).fillna(0.5) * 100
-  sent_rank = df["FinBERT_Score"].rank(pct=True, ascending=True).fillna(0.5) * 100
-  df["Mom_Sent_Rank"] = mom_rank * 0.6 + sent_rank * 0.4
+      mom_rank = df["Mom_6m_1m_%"].rank(pct=True, ascending=True).fillna(0.5) * 100
+      sent_rank = df["FinBERT_Score"].rank(pct=True, ascending=True).fillna(0.5) * 100
+      df["Mom_Sent_Rank"] = mom_rank * 0.6 + sent_rank * 0.4
 
-  df["Composite_Score"] = (
-      df["Val_Rank"] * 0.25
-      + df["Qual_Rank"].fillna(50) * 0.30
-      + df["Growth_Rank"].fillna(50) * 0.20
-      + df["Mom_Sent_Rank"] * 0.25
-  ).round(1)
+      df["Composite_Score"] = (
+          df["Val_Rank"] * 0.25
+          + df["Qual_Rank"].fillna(50) * 0.30
+          + df["Growth_Rank"].fillna(50) * 0.20
+          + df["Mom_Sent_Rank"] * 0.25
+      ).round(1)
 
-  df.loc[df["Val_Tag"] != "Valid", "Composite_Score"] = (
-      df["Composite_Score"] * 0.5
-  ).round(1)
+      df.loc[df["Val_Tag"] != "Valid", "Composite_Score"] = (
+          df["Composite_Score"] * 0.5
+      ).round(1)
 
-  for col in ["Val_Rank", "Qual_Rank", "Growth_Rank", "Mom_Sent_Rank"]:
-    df[col] = df[col].fillna(50).round(1)
+      for col in ["Val_Rank", "Qual_Rank", "Growth_Rank", "Mom_Sent_Rank"]:
+        df[col] = df[col].fillna(50).round(1)
 
-  quintile_cutoff = df["Composite_Score"].quantile(0.80)
+      quintile_cutoff = df["Composite_Score"].quantile(0.80)
 
-  def assign_flag(row):
-    if row["Val_Tag"] != "Valid":
-      return row["Val_Tag"]
-    elif row["Composite_Score"] >= quintile_cutoff:
-      return "Passes Multi-Factor Screen"
-    elif row["Composite_Score"] >= 50:
-      return "Neutral / Watchlist"
-    else:
-      return "Fails Screen / Lagging"
+      def assign_flag(row):
+        if row["Val_Tag"] != "Valid":
+          return row["Val_Tag"]
+        elif row["Composite_Score"] >= quintile_cutoff:
+          return "Passes Multi-Factor Screen"
+        elif row["Composite_Score"] >= 50:
+          return "Neutral / Watchlist"
+        else:
+          return "Fails Screen / Lagging"
 
-  df["Screen_Flag"] = df.apply(assign_flag, axis=1)
-  df = df.sort_values(by="Composite_Score", ascending=False).reset_index(
-      drop=True
-  )
-  return df, hist_data
-
+      df["Screen_Flag"] = df.apply(assign_flag, axis=1)
+      df = df.sort_values(by="Composite_Score", ascending=False).reset_index(
+          drop=True
+      )
+      return df, hist_data
 
 def run_forward_backtest(history_df, hist_data):
   """Evaluates historical snapshots against Nifty 50 (^NSEI) net of 0.25% NSE delivery costs."""
