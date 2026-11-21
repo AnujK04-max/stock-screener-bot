@@ -299,57 +299,58 @@ def fetch_universe_data():
   finbert_scores = score_headlines_finbert(headlines_map)
   df["FinBERT_Score"] = df["Ticker"].map(finbert_scores)
 
-df["Val_Rank"] = (
-        df.groupby("Sector")["Val_Metric"].rank(pct=True, ascending=False) * 100
-    ).fillna(0)
+  df["Val_Rank"] = (
+      df.groupby("Sector")["Val_Metric"].rank(pct=True, ascending=False) * 100
+  ).fillna(0)
 
-    roe_rank = df["ROE_%"].rank(pct=True, ascending=True) * 100
-    de_rank = df["DE"].rank(pct=True, ascending=False) * 100
-    df["Qual_Rank"] = np.where(
-        df["Sector"] == "Financial Services",
-        roe_rank,
-        (roe_rank.fillna(50) * 0.6 + de_rank.fillna(50) * 0.4),
-    )
+  roe_rank = df["ROE_%"].rank(pct=True, ascending=True) * 100
+  de_rank = df["DE"].rank(pct=True, ascending=False) * 100
+  df["Qual_Rank"] = np.where(
+      df["Sector"] == "Financial Services",
+      roe_rank,
+      (roe_rank.fillna(50) * 0.6 + de_rank.fillna(50) * 0.4),
+  )
 
-    rev_rank = df["Rev_Growth_%"].rank(pct=True, ascending=True) * 100
-    eps_rank = df["EPS_Growth_%"].rank(pct=True, ascending=True) * 100
-    df["Growth_Rank"] = rev_rank.fillna(50) * 0.5 + eps_rank.fillna(50) * 0.5
+  rev_rank = df["Rev_Growth_%"].rank(pct=True, ascending=True) * 100
+  eps_rank = df["EPS_Growth_%"].rank(pct=True, ascending=True) * 100
+  df["Growth_Rank"] = rev_rank.fillna(50) * 0.5 + eps_rank.fillna(50) * 0.5
 
-    mom_rank = df["Mom_6m_1m_%"].rank(pct=True, ascending=True).fillna(0.5) * 100
-    sent_rank = df["FinBERT_Score"].rank(pct=True, ascending=True).fillna(0.5) * 100
-    df["Mom_Sent_Rank"] = mom_rank * 0.6 + sent_rank * 0.4
+  mom_rank = df["Mom_6m_1m_%"].rank(pct=True, ascending=True).fillna(0.5) * 100
+  sent_rank = df["FinBERT_Score"].rank(pct=True, ascending=True).fillna(0.5) * 100
+  df["Mom_Sent_Rank"] = mom_rank * 0.6 + sent_rank * 0.4
 
-    df["Composite_Score"] = (
-        df["Val_Rank"] * 0.25
-        + df["Qual_Rank"].fillna(50) * 0.30
-        + df["Growth_Rank"].fillna(50) * 0.20
-        + df["Mom_Sent_Rank"] * 0.25
-    ).round(1)
+  df["Composite_Score"] = (
+      df["Val_Rank"] * 0.25
+      + df["Qual_Rank"].fillna(50) * 0.30
+      + df["Growth_Rank"].fillna(50) * 0.20
+      + df["Mom_Sent_Rank"] * 0.25
+  ).round(1)
 
-    df.loc[df["Val_Tag"] != "Valid", "Composite_Score"] = (
-        df["Composite_Score"] * 0.5
-    ).round(1)
+  df.loc[df["Val_Tag"] != "Valid", "Composite_Score"] = (
+      df["Composite_Score"] * 0.5
+  ).round(1)
 
-    for col in ["Val_Rank", "Qual_Rank", "Growth_Rank", "Mom_Sent_Rank"]:
-      df[col] = df[col].fillna(50).round(1)
+  for col in ["Val_Rank", "Qual_Rank", "Growth_Rank", "Mom_Sent_Rank"]:
+    df[col] = df[col].fillna(50).round(1)
 
-    quintile_cutoff = df["Composite_Score"].quantile(0.80)
+  quintile_cutoff = df["Composite_Score"].quantile(0.80)
 
-    def assign_flag(row):
-      if row["Val_Tag"] != "Valid":
-        return row["Val_Tag"]
-      elif row["Composite_Score"] >= quintile_cutoff:
-        return "Passes Multi-Factor Screen"
-      elif row["Composite_Score"] >= 50:
-        return "Neutral / Watchlist"
-      else:
-        return "Fails Screen / Lagging"
+  def assign_flag(row):
+    if row["Val_Tag"] != "Valid":
+      return row["Val_Tag"]
+    elif row["Composite_Score"] >= quintile_cutoff:
+      return "Passes Multi-Factor Screen"
+    elif row["Composite_Score"] >= 50:
+      return "Neutral / Watchlist"
+    else:
+      return "Fails Screen / Lagging"
 
-    df["Screen_Flag"] = df.apply(assign_flag, axis=1)
-    df = df.sort_values(by="Composite_Score", ascending=False).reset_index(
-        drop=True
-    )
-    return df, hist_data
+  df["Screen_Flag"] = df.apply(assign_flag, axis=1)
+  df = df.sort_values(by="Composite_Score", ascending=False).reset_index(
+      drop=True
+  )
+  return df, hist_data
+
 
 def run_forward_backtest(history_df, hist_data):
   """Evaluates historical snapshots against Nifty 50 (^NSEI) net of 0.25% NSE delivery costs."""
@@ -428,7 +429,9 @@ def run_forward_backtest(history_df, hist_data):
     return summary
 
   top_net_ret = float(top_q["Fwd_Ret_%"].mean()) - tx_cost
-  bot_net_ret = float(bot_q["Fwd_Ret_%"].mean()) - tx_cost if not bot_q.empty else 0.0
+  bot_net_ret = (
+      float(bot_q["Fwd_Ret_%"].mean()) - tx_cost if not bot_q.empty else 0.0
+  )
   hit_rate = float((top_q["Fwd_Ret_%"] - tx_cost > nifty_ret).mean()) * 100
   ic = float(
       cohort["Composite_Score"].corr(cohort["Fwd_Ret_%"], method="spearman")
@@ -604,7 +607,7 @@ def generate_html(df, bt):
                 </div>
             </div>
         </div>
-    
+
         <div class="flex flex-wrap gap-3 mb-5">
             <input type="text" id="searchInput" placeholder="Search ticker or sector..." class="bg-slate-900 border border-slate-700 text-sm rounded-lg px-4 py-2 text-white focus:outline-none focus:border-emerald-500 w-full md:w-64">
             <select id="flagFilter" class="bg-slate-900 border border-slate-700 text-sm rounded-lg px-4 py-2 text-white focus:outline-none focus:border-emerald-500">
@@ -641,7 +644,7 @@ def generate_html(df, bt):
         </footer>
     </div>
 
-   <script>
+    <script>
         const stocks = {records_json};
         const sliderIds = ['sliderVal', 'sliderQual', 'sliderGrowth', 'sliderMom'];
 
@@ -711,115 +714,3 @@ def generate_html(df, bt):
             document.getElementById('tableBody').innerHTML = filtered.map((s, idx) => {{
                 let badgeClass = 'bg-slate-800 text-slate-300';
                 if (s.Screen_Flag === 'Passes Multi-Factor Screen') badgeClass = 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30';
-                else if (s.Screen_Flag.startsWith('NM')) badgeClass = 'bg-amber-500/15 text-amber-400 border border-amber-500/30';
-                else if (s.Screen_Flag === 'Fails Screen / Lagging') badgeClass = 'bg-rose-500/10 text-rose-400';
-
-                const chgColor = s['Change_%'] >= 0 ? 'text-emerald-400' : 'text-rose-400';
-                const deltaColor = s.Sim_Delta > 0 ? 'text-emerald-400' : (s.Sim_Delta < 0 ? 'text-rose-400' : 'text-slate-400');
-                const simBadge = s.In_Sim_Top20
-                    ? '<span class="ml-1.5 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">Sim Top 20%</span>'
-                    : '';
-
-                let sentHtml = '<span class="text-slate-500 text-xs">Insufficient (&lt;3)</span>';
-                if (s.FinBERT_Score !== 'N/A') {{
-                    const sc = Number(s.FinBERT_Score);
-                    const sColor = sc > 0.1 ? 'text-emerald-400' : (sc < -0.1 ? 'text-rose-400' : 'text-slate-300');
-                    sentHtml = `<span class="font-mono font-semibold ${{sColor}}">${{sc >= 0 ? '+' : ''}}${{sc.toFixed(2)}}</span> <span class="text-xs text-slate-500">(${{s.Headline_Count}} news)</span>`;
-                }}
-
-                return `
-                    <tr class="hover:bg-slate-800/40 transition">
-                        <td class="py-3 px-4">
-                            <div class="font-bold text-white"><span class="text-slate-500 font-mono mr-1.5">#${{idx + 1}}</span>${{s.Ticker}}${{simBadge}}</div>
-                            <div class="text-xs text-slate-400">${{s.Sector}}</div>
-                        </td>
-                        <td class="py-3 px-4">
-                            <div class="font-semibold text-white">₹${{Number(s.Price).toLocaleString('en-IN')}}</div>
-                            <div class="text-xs ${{chgColor}}">${{s['Change_%'] >= 0 ? '+' : ''}}${{s['Change_%']}}%</div>
-                        </td>
-                        <td class="py-3 px-4 font-mono">
-                            <div class="font-bold text-emerald-300">${{s.Composite_Score}} <span class="text-xs text-slate-500 font-normal">/100</span></div>
-                            <div class="text-xs text-sky-300">Sim: ${{s.Sim_Score}} <span class="${{deltaColor}}">(${{s.Sim_Delta >= 0 ? '+' : ''}}${{s.Sim_Delta}})</span></div>
-                        </td>
-                        <td class="py-3 px-4 text-slate-300 text-xs font-mono">PE: ${{s.PE}}<br>PB: ${{s.PB}}</td>
-                        <td class="py-3 px-4 text-slate-300">${{s['ROE_%'] !== 'N/A' ? s['ROE_%'] + '%' : 'N/A'}}</td>
-                        <td class="py-3 px-4">${{sentHtml}}</td>
-                        <td class="py-3 px-4"><span class="px-2.5 py-1 rounded-full text-xs font-medium ${{badgeClass}}">${{s.Screen_Flag}}</span></td>
-                    </tr>
-                `;
-            }}).join('');
-        }}
-
-        renderTable();
-        sliderIds.forEach(id => document.getElementById(id).addEventListener('input', renderTable));
-        document.getElementById('resetWeightsBtn').addEventListener('click', () => {{
-            document.getElementById('sliderVal').value = 25;
-            document.getElementById('sliderQual').value = 30;
-            document.getElementById('sliderGrowth').value = 20;
-            document.getElementById('sliderMom').value = 25;
-            renderTable();
-        }});
-        document.getElementById('searchInput').addEventListener('input', renderTable);
-        document.getElementById('flagFilter').addEventListener('change', renderTable);
-        </script>
-</body>
-</html>
-"""
-  return html_content
-
-
-if __name__ == "__main__":
-  df, hist_data = fetch_universe_data()
-
-  hf_token = os.environ.get("HF_TOKEN")
-  repo_id = "Anujk04/indian-stock-screener"
-  history_file = "screener_history.csv"
-  existing_df = pd.DataFrame()
-
-  if hf_token:
-    api = HfApi()
-    try:
-      downloaded_path = hf_hub_download(
-          repo_id=repo_id,
-          filename=history_file,
-          repo_type="space",
-          token=hf_token,
-      )
-      existing_df = pd.read_csv(downloaded_path)
-    except Exception:
-      existing_df = pd.DataFrame()
-
-    ist = timezone(timedelta(hours=5, minutes=30))
-    df["Run_Date"] = datetime.now(ist).strftime("%Y-%m-%d")
-    df["Timestamp"] = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-
-    combined_df = pd.concat([existing_df, df], ignore_index=True)
-    combined_df = combined_df.drop_duplicates(
-        subset=["Run_Date", "Ticker"], keep="last"
-    )
-    combined_df.to_csv(history_file, index=False)
-  else:
-    combined_df = df
-
-  bt_summary = run_forward_backtest(combined_df, hist_data)
-  html = generate_html(df, bt_summary)
-
-  with open("index.html", "w", encoding="utf-8") as f:
-    f.write(html)
-
-  if hf_token:
-    api.upload_file(
-        path_or_fileobj="index.html",
-        path_in_repo="index.html",
-        repo_id=repo_id,
-        repo_type="space",
-        token=hf_token,
-    )
-    api.upload_file(
-        path_or_fileobj=history_file,
-        path_in_repo=history_file,
-        repo_id=repo_id,
-        repo_type="space",
-        token=hf_token,
-    )
-    print("Successfully updated FinBERT dashboard & live Nifty 50 backtester!")
